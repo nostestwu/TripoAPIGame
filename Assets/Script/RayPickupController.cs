@@ -53,6 +53,18 @@ public class RayPickupController : MonoBehaviour
     public float rotSmoothing = 18f;                    // 旋转跟随平滑
     public float heldLinearDrag = 2f, heldAngularDrag = 5f; // 抓取时提高阻尼更稳
 
+    [Header("Throw (E to charge & release)")]
+    public KeyCode throwKey = KeyCode.E;
+    public float minImpulse = 4f;        // 最小冲量（米/秒*质量）
+    public float maxImpulse = 20f;       // 最大冲量
+    public float maxChargeTime = 1.2f;   // 蓄力上限（秒）
+    public AnimationCurve chargeCurve = AnimationCurve.EaseInOut(0, 0, 1, 1);
+    // 可选：投出瞬间给一点上挑
+    public float launchUpBias = 0.0f;    // 0 = 纯前向；0.1~0.2 = 略微抬起
+    float _chargeT = 0f;
+    bool _charging = false;
+    bool _throwQueued = false; // 防止同帧重复触发
+
     // 累积的绕“屏幕X轴”的角度（度），可无限增减
     float spinXDeg = 0f;
 
@@ -170,6 +182,45 @@ public class RayPickupController : MonoBehaviour
             }
             // 温和取模防数值膨胀（不影响“无限旋”观感）
             if (spinYDeg > 10000f || spinYDeg < -10000f) spinYDeg %= 360f;
+        }
+
+        // 仅在“抓住物体”时才允许投掷
+        if (held)
+        {
+            // 开始蓄力
+            if (Input.GetKeyDown(throwKey))
+            {
+                _charging = true;
+                _throwQueued = false;
+                _chargeT = 0f;
+            }
+            // 按住累积（0..1）
+            if (_charging && Input.GetKey(throwKey))
+            {
+                _chargeT = Mathf.Clamp01(_chargeT + Time.deltaTime / maxChargeTime);
+                // 你可以在这里驱动UI：例如根据 _chargeT 填充条
+            }
+            // 松开 → 计算冲量并投掷
+            if (_charging && Input.GetKeyUp(throwKey) && !_throwQueued)
+            {
+                _charging = false;
+                _throwQueued = true;
+
+                float curve = (chargeCurve != null) ? chargeCurve.Evaluate(_chargeT) : _chargeT;
+                float impulseMag = Mathf.Lerp(minImpulse, maxImpulse, curve);
+
+                // 用当前的瞄准前向（含你的鼠标俯仰）
+                GetAimBasis(out var fwd, out _, out var up);
+                Vector3 dir = (fwd + up * launchUpBias).normalized;
+
+                StartCoroutine(ThrowRoutine(dir, impulseMag));
+            }
+        }
+        else
+        {
+            // 手里没东西就重置
+            _charging = false;
+            _chargeT = 0f;
         }
 
         if (drawDebugRay)
@@ -317,8 +368,8 @@ public class RayPickupController : MonoBehaviour
 
         Vector3 want = rayOrigin.position + fwd * curDist + rgt * offX + up * offY;
         // 抓前先把锚点刚体放到“本帧目标位姿”
-        holdRb.position = _frameTargetPos;
-        holdRb.rotation = _frameTargetRot;
+        holdRb.position = want;                             // 原来用的是 _frameTargetPos（旧值）
+        holdRb.rotation = Quaternion.LookRotation(fwd, up); // 原来用的是 _frameTargetRot（旧值）
 
         spinXDeg = 0f;            // 已有
         spinYDeg = 0f;            // 🆕 新增：水平角也从0开始
@@ -489,4 +540,44 @@ public class RayPickupController : MonoBehaviour
         var c = canGrab ? rayColorCanGrab : (hit ? rayColorBlocked : rayColorNoHit);
         SetLineColor(c);
     }
+
+    IEnumerator ThrowRoutine(Vector3 dir, float impulseMag)
+    {
+        if (!held) yield break;
+
+        // 缓存当前被抓刚体
+        Rigidbody target = held;
+
+        // —— 断开抓取（不要把速度清零）
+        // 改造一下：做一个“投掷版 Drop”，不清零速度只解开关节 & 恢复碰撞
+        if (joint)
+        {
+            joint.connectedBody = null;
+            Destroy(joint);
+            joint = null;
+        }
+
+        // 恢复物体参数（不要清零速度）
+        target.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+        TogglePlayerHeldCollision(false);
+        held = null;
+        heldCols = null;
+
+        // 等到下一次 FixedUpdate 再施加冲量，确保上面的解关节已被物理步接收
+        yield return new WaitForFixedUpdate(); // :contentReference[oaicite:2]{index=2}
+
+        if (target) // 物体可能在这一帧被销毁
+        {
+            // 一次性冲量（与质量相关的瞬时速度变化）:contentReference[oaicite:3]{index=3}
+            target.AddForce(dir * impulseMag, ForceMode.Impulse);
+            // 可选：给一点角动量，让飞行更自然
+            // target.AddTorque(Random.insideUnitSphere * 0.5f * impulseMag, ForceMode.Impulse);
+        }
+
+        // 防残留：保证握持侧没有遗留 Joint
+        DetachAnyJointsFromHold();
+
+        _throwQueued = false;
+    }
+
 }
