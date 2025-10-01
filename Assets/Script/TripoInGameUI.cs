@@ -34,6 +34,25 @@ public class TripoInGameUI : MonoBehaviour
     bool _addToDBThisTime = false;      // 只有“输入框生成”才会置 true
     string _pendingPromptForDB = null;  // 这次入库要用的 prompt（保证不为空）
 
+    [Header("Explosive Auto-Decorate")]
+    public GameObject defaultExplosionVfxPrefab;   // 默认爆炸特效（预制体）
+    public AudioClip defaultExplosionSfx;         // 默认爆炸音
+    [Range(0f, 1f)] public float defaultExplosionSfxVol = 1f;
+    public float defaultExplodeRadius = 6f;
+    public float defaultExplodeForce = 20f;
+    public float defaultUpwards = 0.5f;
+    public LayerMask defaultAffectLayers = ~0;
+
+    // 英文关键词（用词边界，避免 bombastic 命中 bomb）
+    static readonly string[] EnExplosive = new[]{
+    "bomb","grenade","tnt","dynamite","c4","explosive","landmine","mine",
+    "warhead","nuke","nuclear","molotov"
+    };
+
+    // 中文关键词（避免单独“雷”，只用明确/组合词）
+    static readonly string[] ZhExplosive = new[]{
+     "炸弹","手雷","原子弹","核弹","炸药","炸药包","雷管","爆破桶","爆炸桶","起爆器"
+    };
 
     void Start()
     {
@@ -129,16 +148,13 @@ public class TripoInGameUI : MonoBehaviour
         if (string.IsNullOrWhiteSpace(urlOrDir))
         {
             Debug.LogError("Tripo output empty — 可能只返回了另一字段");
-            // 出错时也要复位 UI
             waiting = false;
             progressText.gameObject.SetActive(false);
             return;
         }
 
-        // （可选）如果仓库面板当前开着，顺手刷新一下
-        // warehouseUI?.Rebuild();
-
-        StartCoroutine(LoadAndSpawn(urlOrDir));
+        // 传入这次的 prompt
+        StartCoroutine(LoadAndSpawn(urlOrDir, lastPrompt));   // <<< 修改
     }
 
 
@@ -178,8 +194,11 @@ public class TripoInGameUI : MonoBehaviour
 
         return false;
     }
-
-    IEnumerator LoadAndSpawn(string pathOrUrl)
+    IEnumerator LoadAndSpawn(string pathOrUrl)                    // <<< 新增薄包装
+    {
+        yield return LoadAndSpawn(pathOrUrl, lastPrompt);
+    }
+    IEnumerator LoadAndSpawn(string pathOrUrl, string decoratePromptMaybe)   // <<< 新签名
     {
         // === 0) 拿到本次要用的生成位姿（这一步修复了你漏赋值的问题） ===
         if (!ResolveSpawnPose(out var spawnPos, out var spawnRot, out var spawnScaleLocal))
@@ -259,6 +278,12 @@ public class TripoInGameUI : MonoBehaviour
 
         // === 6) 物理 ===
         VHACDCompoundColliderBuilder.Build(go, maxHullsPerMesh: 32, rigidbodyMass: 300f);
+
+        // === 6.5) ✨ 如 prompt 像“爆炸物” → 自动挂 Explosive + Sphere Trigger
+        if (LooksLikeExplosive(decoratePromptMaybe))             
+        {
+            DecorateAsExplosive(go, decoratePromptMaybe);
+        }
 
         // === 7) 注册缓存 ===
         if (!ModelCache.TryGet(finalLocalPathForDB, out _))
@@ -393,4 +418,105 @@ public class TripoInGameUI : MonoBehaviour
     {
         if (core) core.OnDownloadComplete.RemoveListener(ModelReady);
     }
+
+    static bool LooksLikeExplosive(string prompt)
+    {
+        if (string.IsNullOrWhiteSpace(prompt)) return false;
+        string p = prompt.ToLowerInvariant();
+
+        // 英文：用“空格/标点边界”简化匹配（你也可以改用正则 \b 进一步严格）
+        foreach (var w in EnExplosive)
+        {
+            if (p.Contains(w)) return true;
+        }
+
+        // 中文：直接子串包含（已剔除歧义“雷”单字）
+        foreach (var w in ZhExplosive)
+        {
+            if (p.Contains(w)) return true;
+        }
+
+        return false;
+    }
+
+    // 计算模型的大致半径（以所有 Renderer 的包围盒为参考）
+    static float ComputeApproxRadius(GameObject root, float pad = 1.0f)
+    {
+        var rends = root.GetComponentsInChildren<Renderer>(true);
+        if (rends == null || rends.Length == 0) return 1.0f;
+
+        Bounds b = new Bounds(rends[0].bounds.center, Vector3.zero);
+        for (int i = 0; i < rends.Length; i++) b.Encapsulate(rends[i].bounds);
+        // 取最大半径（包围盒对角的一半），再乘一个 padding 系数
+        float r = b.extents.magnitude;
+        return Mathf.Max(0.2f, r * pad);
+    }
+
+    static T AddOrGet<T>(GameObject go) where T : Component
+    {
+        var c = go.GetComponent<T>();
+        return c ? c : go.AddComponent<T>();
+    }
+
+    // 给 root 挂上 Explosive + Sphere Trigger（父物体上）
+    void DecorateAsExplosive(GameObject root, string promptUsed)
+    {
+        if (!root) return;
+
+        // 1) 父节点 Rigidbody（如果 VHACD 已经加在父上就直接复用；否则补一个）
+        var rb = root.GetComponent<Rigidbody>();
+        if (!rb) rb = root.AddComponent<Rigidbody>();
+        rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+        rb.mass = Mathf.Max(1f, rb.mass);
+
+        // 2) 父节点触发器（用于 OnTriggerEnter 触发爆炸）
+        var sc = root.GetComponent<SphereCollider>();
+        if (!sc) sc = root.AddComponent<SphereCollider>();
+        sc.isTrigger = true;
+        sc.radius = ComputeApproxRadius(root, 0.6f); // 半径可按需要调
+
+        // 3) Explosive 组件 + 参数填充
+        var ex = AddOrGet<Explosive>(root);
+        ex.radius = defaultExplodeRadius;
+        ex.force = defaultExplodeForce;
+        ex.upwardsModifier = defaultUpwards;
+        ex.affectLayers = defaultAffectLayers;
+        ex.explosionVfxPrefab = defaultExplosionVfxPrefab;
+        ex.explosionSfx = defaultExplosionSfx;
+        ex.sfxVolume = defaultExplosionSfxVol;
+        ex.explodeOnTriggerToo = true; // 大触发器命中即可
+        ex.minImpactSpeed = 0.2f;
+        // 可选：ex.autoExplodeAfter = 0f;
+
+        // 你也可以在这里加一个小小的“标记组件/脚本化对象”记住这个 prompt
+        // 但由于我们把装配过的实例丢进了 ModelCache，仓库再取就是“带爆炸能力”的版本。
+    }
+    public void SpawnExistingWithPrompt(string urlOrDir, string promptMaybeNull)
+    {
+        // 先用你原来的克隆方式
+        if (!ResolveSpawnPose(out var spawnPos, out var spawnRot, out var spawnScaleLocal))
+        {
+            spawnPos = Vector3.zero; spawnRot = Quaternion.identity; spawnScaleLocal = spawnScale;
+        }
+
+        if (ModelCache.TryGet(urlOrDir, out var prefab))
+        {
+            var clone = Instantiate(prefab, spawnPos, spawnRot);
+            clone.transform.localScale = Vector3.one * spawnScaleLocal;
+            clone.SetActive(true);
+            StartCoroutine(WarmEnableColliders(clone));
+
+            // 保险：如果旧缓存里没有 Explosive，但 prompt 看起来是爆炸物，就补一次
+            if (LooksLikeExplosive(promptMaybeNull) && clone.GetComponentInChildren<Explosive>(true) == null)
+            {
+                DecorateAsExplosive(clone, promptMaybeNull);
+            }
+            return;
+        }
+
+        // 没命中缓存就走原来的加载流程
+        StartCoroutine(LoadAndSpawn(urlOrDir, promptMaybeNull));     // <<< 修改
+
+    }
+
 }

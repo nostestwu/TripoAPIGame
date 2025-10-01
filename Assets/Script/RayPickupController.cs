@@ -587,6 +587,14 @@ public class RayPickupController : MonoBehaviour
         if (target)
         {
             target.AddForce(dir * impulseMag, ForceMode.Impulse);
+
+            // ★ 新增：如果这个被扔出的刚体带 Explosive，则武装它
+            var explosive = target.GetComponent<Explosive>();
+            if (explosive)
+            {
+                explosive.OnThrown();
+                Debug.Log($"[Explosive] Armed by throw: {target.name}");
+            }
         }
 
         DetachAnyJointsFromHold();

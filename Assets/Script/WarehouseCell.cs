@@ -12,29 +12,27 @@ public class WarehouseCell : MonoBehaviour
     string itemId;
     string modelUrl;
 
+    string promptText;
+
     public void Init(WarehouseUI owner, WarehouseItem item)
     {
         this.owner = owner;
         itemId = item.id;
         modelUrl = item.modelUrl;
+        promptText = item.prompt;
 
         if (label) label.text = Trunc(item.prompt, 28);
 
         // WarehouseCell.cs -> Init 里 mainButton 的回调，只改这段
-        if (mainButton)
-        {
-            mainButton.onClick.RemoveAllListeners();
-            mainButton.onClick.AddListener(() => {
-                owner.Hide();
-
-                // ⚠️ 不要用 owner.tripo 的老引用。点击时现场找一个可用的 TripoInGameUI
-                var tripo = Object.FindObjectOfType<TripoInGameUI>();
-                if (tripo)
-                    tripo.SpawnExisting(modelUrl);
-                else
-                    Debug.LogWarning("[WarehouseCell] No TripoInGameUI in this scene; spawn ignored.");
-            });
-        }
+        mainButton.onClick.RemoveAllListeners();
+        mainButton.onClick.AddListener(() => {
+            owner.Hide();
+            var tripo = Object.FindObjectOfType<TripoInGameUI>();
+            if (tripo)
+                tripo.SpawnExistingWithPrompt(modelUrl, promptText); // ← 传 prompt
+            else
+                Debug.LogWarning("[WarehouseCell] No TripoInGameUI in this scene; spawn ignored.");
+        });
 
 
         if (deleteButton)

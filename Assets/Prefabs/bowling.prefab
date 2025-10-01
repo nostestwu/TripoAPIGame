@@ -13,6 +13,7 @@ GameObject:
   - component: {fileID: 6837265369536451968}
   - component: {fileID: 4874162716027380022}
   - component: {fileID: 882445582334690149}
+  - component: {fileID: 4419853180985998683}
   m_Layer: 6
   m_Name: bowling
   m_TagString: Untagged
@@ -32,7 +33,8 @@ Transform:
   m_LocalPosition: {x: -0, y: 0.14638492, z: 101.69}
   m_LocalScale: {x: 0.2, y: 0.2, z: 0.2}
   m_ConstrainProportionsScale: 1
-  m_Children: []
+  m_Children:
+  - {fileID: 2096132746858705862}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!33 &6002810509965529949
@@ -100,14 +102,14 @@ CapsuleCollider:
     serializedVersion: 2
     m_Bits: 0
   m_LayerOverridePriority: 0
-  m_IsTrigger: 0
+  m_IsTrigger: 1
   m_ProvidesContacts: 0
   m_Enabled: 1
   serializedVersion: 2
-  m_Radius: 0.97855
-  m_Height: 4.856123
+  m_Radius: 2.3196983
+  m_Height: 5.421811
   m_Direction: 1
-  m_Center: {x: 0, y: 2.4816766, z: -0.00000011920929}
+  m_Center: {x: 1.4458912e-23, y: 2.7645211, z: -0.02286911}
 --- !u!54 &882445582334690149
 Rigidbody:
   m_ObjectHideFlags: 0
@@ -135,3 +137,82 @@ Rigidbody:
   m_Interpolate: 0
   m_Constraints: 0
   m_CollisionDetection: 0
+--- !u!114 &4419853180985998683
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4390041334368660992}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 5e19f2af8152e4848a4805eb7f1c1333, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  radius: 6
+  force: 20
+  upwardsModifier: 0.5
+  affectLayers:
+    serializedVersion: 2
+    m_Bits: 4294967295
+  explosionVfxPrefab: {fileID: 358637981425055526, guid: 8eb503696b886e04faff8fc0f480d473, type: 3}
+  explosionSfx: {fileID: 0}
+  sfxVolume: 1
+  explodeOnTriggerToo: 1
+  minImpactSpeed: 0.2
+  autoExplodeAfter: 0
+--- !u!1 &6985722879138835810
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 2096132746858705862}
+  - component: {fileID: 9123689976107473601}
+  m_Layer: 6
+  m_Name: GameObject
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &2096132746858705862
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 6985722879138835810}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 4668905853556945992}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!136 &9123689976107473601
+CapsuleCollider:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 6985722879138835810}
+  m_Material: {fileID: 0}
+  m_IncludeLayers:
+    serializedVersion: 2
+    m_Bits: 0
+  m_ExcludeLayers:
+    serializedVersion: 2
+    m_Bits: 0
+  m_LayerOverridePriority: 0
+  m_IsTrigger: 0
+  m_ProvidesContacts: 0
+  m_Enabled: 1
+  serializedVersion: 2
+  m_Radius: 0.5
+  m_Height: 4.8563943
+  m_Direction: 1
+  m_Center: {x: 1.6726088e-23, y: 2.4372728, z: -1.6726088e-23}
