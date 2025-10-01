@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Events;
@@ -6,52 +7,83 @@ using UnityEngine.Events;
 public class PressurePlate : MonoBehaviour
 {
     [Header("Detect")]
-    public LayerMask detectLayers = ~0;          // 允许触发的层（玩家/可抓取等）
-    public bool ignoreTriggerColliders = true;   // 忽略对方的触发器
-    public bool requireNonKinematicRB = false;   // 需要对方带非运动学刚体才算“压住”
+    public LayerMask detectLayers = ~0;
+    public bool ignoreTriggerColliders = true;
+    public bool requireNonKinematicRB = false;
 
     [Header("Target Door(s)")]
-    public List<SlidingDoor> doors = new();      // 一个按钮可以驱动多个门
-    public UnityEvent<bool> onPressedChanged;    // 可选：给UI/音效用
+    public List<SlidingDoor> doors = new();
+    public UnityEvent<bool> onPressedChanged;
 
-    // 记住“当前压在上面的”Collider，避免一个物体多个 Collider 造成重复计数
+    // ========= 新增：一次性触发选项 =========
+    [Header("One-shot Options")]
+    [Tooltip("勾选后：首次触碰即锁存为‘已触发’，保持开门；后续离开也不再关闭。")]
+    public bool oneShotLatch = false;
+
+    [Tooltip("一次性‘脉冲’模式：首次触碰仅打开一小段时间，然后自动关闭。单位：秒；<=0 则不启用。")]
+    public float oneShotPulseDuration = 0f;
+
+    [Tooltip("一次性触发后是否禁用自身触发器（防止重复触发/计数）。")]
+    public bool disableColliderAfterOneShot = true;
+
+    // =====================================
+
+    // 当前压住的碰撞体集合（避免一个物体多个Collider重复计数）
     private readonly HashSet<Collider> _pressing = new();
-
-    // 放在类的字段区
-    bool _isPressed = false;   // 记住上一次状态
+    bool _isPressed = false;     // 记住上一次状态
+    bool _latched = false;       // 记住是否已一次性触发
+    Coroutine _pulseCo;          // 脉冲协程句柄
+    Collider _selfCol;
 
     void Reset()
     {
         var col = GetComponent<Collider>();
-        col.isTrigger = true;                    // 按钮区域必须是触发器
+        col.isTrigger = true;    // 按钮区域必须是触发器
+    }
+
+    void Awake()
+    {
+        _selfCol = GetComponent<Collider>();
+        if (_selfCol) _selfCol.isTrigger = true;
     }
 
     void OnTriggerEnter(Collider other)
     {
         if (!IsValid(other)) return;
+
+        // —— 一次性触发（锁存）优先 —— 
+        if (!_latched && (oneShotLatch || oneShotPulseDuration > 0f))
+        {
+            TriggerOnce();
+            return; // 锁存/脉冲模式下，无需进入持续计数逻辑
+        }
+
         _pressing.Add(other);
         UpdateState();
     }
 
     void OnTriggerExit(Collider other)
     {
+        if (_latched) return; // 一次性触发后，退出不再影响状态
         if (!_pressing.Remove(other)) return;
         UpdateState();
     }
 
-    // 替换 OnDisable() —— 关闭时静默复位（不播音）
+    // 关闭或卸载时复位
     void OnDisable()
     {
-        if (_pressing.Count > 0) _pressing.Clear();
+        _pressing.Clear();
         _isPressed = false;
+        _latched = false;
+        if (_pulseCo != null) { StopCoroutine(_pulseCo); _pulseCo = null; }
         foreach (var d in doors) if (d) d.SetOpen(false);
         onPressedChanged?.Invoke(false);
+        if (_selfCol) _selfCol.enabled = true;   // 重新启用触发器，方便下次进场景可再用
     }
-
 
     bool IsValid(Collider other)
     {
-        if (!other || other == GetComponent<Collider>()) return false;
+        if (!other || other == _selfCol) return false;
         if (ignoreTriggerColliders && other.isTrigger) return false;
         if ((detectLayers.value & (1 << other.gameObject.layer)) == 0) return false;
 
@@ -63,22 +95,58 @@ public class PressurePlate : MonoBehaviour
         return true;
     }
 
-    // 替换原来的 UpdateState()
+    // —— 核心：普通“持续按压”逻辑（非 one-shot 时生效）
     void UpdateState()
     {
         bool pressed = _pressing.Count > 0;
-
-        // 只有状态变化时才执行（避免同一次开门多次播放）
         if (pressed == _isPressed) return;
-        _isPressed = pressed;
 
+        _isPressed = pressed;
         foreach (var d in doors) if (d) d.SetOpen(pressed);
         onPressedChanged?.Invoke(pressed);
 
-        // 只在状态翻转时播一次
         if (pressed)
             AudioManager.Instance?.PlaySFX(AudioManager.Instance.doorOpenClip, transform.position, 1f);
-
     }
 
+    // —— 新增：一次性触发入口（锁存或脉冲）
+    void TriggerOnce()
+    {
+        _latched = true;
+
+        // 统一先开门 & 通知
+        foreach (var d in doors) if (d) d.SetOpen(true);
+        onPressedChanged?.Invoke(true);
+        AudioManager.Instance?.PlaySFX(AudioManager.Instance.doorOpenClip, transform.position, 1f);
+
+        // 锁存型：保持开启，直接忽略后续触发/离开
+        if (oneShotLatch && oneShotPulseDuration <= 0f)
+        {
+            if (disableColliderAfterOneShot && _selfCol) _selfCol.enabled = false;
+            return;
+        }
+
+        // 脉冲型：N 秒后自动关闭并可选择恢复触发器
+        if (oneShotPulseDuration > 0f)
+        {
+            if (_pulseCo != null) StopCoroutine(_pulseCo);
+            _pulseCo = StartCoroutine(PulseCloseAfter(oneShotPulseDuration));
+        }
+    }
+
+    IEnumerator PulseCloseAfter(float seconds)
+    {
+        if (disableColliderAfterOneShot && _selfCol) _selfCol.enabled = false;
+
+        yield return new WaitForSeconds(seconds);
+
+        foreach (var d in doors) if (d) d.SetOpen(false);
+        onPressedChanged?.Invoke(false);
+
+        // 脉冲结束后：重置为“未锁存”，允许再次触发（如需一次性仅触发一次，可把下面两行删掉）
+        _latched = false;
+        if (_selfCol) _selfCol.enabled = true;
+
+        _pulseCo = null;
+    }
 }
