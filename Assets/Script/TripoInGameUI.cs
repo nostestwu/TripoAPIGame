@@ -220,24 +220,39 @@ public class TripoInGameUI : MonoBehaviour
         string uri;
         string finalLocalPathForDB = null;
         string originalUrlMaybeRemote = null;
+        bool isRemoteGltf = false;
 
         if (pathOrUrl.StartsWith("http", System.StringComparison.OrdinalIgnoreCase))
         {
-            originalUrlMaybeRemote = pathOrUrl; // 保存原始远端URL，作为缓存别名
-            string savedPath = null;
-            yield return DownloadToCache(pathOrUrl, p2 => savedPath = p2);
-            if (string.IsNullOrEmpty(savedPath))
+            originalUrlMaybeRemote = pathOrUrl;
+            isRemoteGltf = IsRemoteGltf(pathOrUrl);
+
+            if (isRemoteGltf)
             {
-                Debug.LogError("Tripo signed URL likely expired. Please re-generate a fresh link.");
-                waiting = false;
-                progressText.gameObject.SetActive(false);
-                yield break;
+                // ⭕ 远端 .gltf：不要下载成单文件！直接让 glTFast 用 URL，
+                // 这样它会自己按相对路径拉取 .bin / 贴图等外链资源。
+                uri = pathOrUrl;
+                finalLocalPathForDB = null;     // 不要入库
             }
-            uri = "file://" + savedPath.Replace("\\", "/");
-            finalLocalPathForDB = savedPath; // ✅ 入库用本地文件路径（非 file:// 前缀）
+            else
+            {
+                // ✅ .glb（或已知“单文件”）：下载到本地缓存，再用 file:// 打开
+                string savedPath = null;
+                yield return DownloadToCache(pathOrUrl, p2 => savedPath = p2);
+                if (string.IsNullOrEmpty(savedPath))
+                {
+                    Debug.LogError("Tripo signed URL likely expired. Please re-generate a fresh link.");
+                    waiting = false;
+                    progressText.gameObject.SetActive(false);
+                    yield break;
+                }
+                uri = "file://" + savedPath.Replace("\\", "/");
+                finalLocalPathForDB = savedPath; // ✅ 入库用本地路径（稳定）
+            }
         }
         else
         {
+            // 本地目录/文件分支（保持不变）
             string full = Path.GetFullPath(pathOrUrl);
             if (Directory.Exists(full))
             {
@@ -253,7 +268,7 @@ public class TripoInGameUI : MonoBehaviour
                 full = gltfs[0];
             }
             uri = "file://" + full.Replace("\\", "/");
-            finalLocalPathForDB = full; // ✅ 入库用绝对文件路径
+            finalLocalPathForDB = full; // ✅ 入库用绝对路径
         }
 
         // === 3) 先创建承载物体并放到“当前激活场景” ===
@@ -286,24 +301,22 @@ public class TripoInGameUI : MonoBehaviour
         }
 
         // === 7) 注册缓存 ===
-        if (!ModelCache.TryGet(finalLocalPathForDB, out _))
+        if (!ModelCache.TryGet(finalLocalPathForDB ?? originalUrlMaybeRemote, out _))
         {
-            if (!string.IsNullOrEmpty(originalUrlMaybeRemote))
-                ModelCache.RegisterFromInstance(finalLocalPathForDB, go, originalUrlMaybeRemote);
-            else
-                ModelCache.RegisterFromInstance(finalLocalPathForDB, go);
+            // 会话级缓存：远端 .gltf 也允许用“原始 URL”做 key，让同一局内 SpawnExisting 命中
+            string key = finalLocalPathForDB ?? originalUrlMaybeRemote;
+            if (!string.IsNullOrEmpty(key))
+                ModelCache.RegisterFromInstance(key, go, originalUrlMaybeRemote);
         }
 
-        // === ✅ 只在“输入框触发”的这一次才入库；仓库点击/缓存补载一律不入库 ===
+        // === ✅ 入库：只在“输入框生成”且有稳定本地路径时才入（避免远端 .gltf 失效）===
         if (WarehouseDB.Instance)
         {
-            // 把远端URL替换成本地路径（若有）
-            if (!string.IsNullOrEmpty(originalUrlMaybeRemote))
+            if (!string.IsNullOrEmpty(originalUrlMaybeRemote) && !string.IsNullOrEmpty(finalLocalPathForDB))
                 WarehouseDB.Instance.ReplaceUrlEverywhere(originalUrlMaybeRemote, finalLocalPathForDB);
 
-            if (_addToDBThisTime)
+            if (_addToDBThisTime && !string.IsNullOrEmpty(finalLocalPathForDB))
             {
-                // 防止重复：用归一化后的本地路径判断
                 if (!WarehouseDB.Instance.ContainsUrl(finalLocalPathForDB))
                     WarehouseDB.Instance.Add(_pendingPromptForDB ?? "Unnamed", finalLocalPathForDB);
             }
@@ -352,6 +365,13 @@ public class TripoInGameUI : MonoBehaviour
 
     IEnumerator DownloadToCache(string remoteUrl, System.Action<string> onDone)
     {
+        if (remoteUrl.EndsWith(".gltf", System.StringComparison.OrdinalIgnoreCase))
+        {
+            Debug.LogWarning("[TripoInGameUI] Remote is a .gltf with likely external textures. " +
+                             "Skipping single-file caching to avoid missing images next session.");
+            onDone?.Invoke(remoteUrl); // << 直接回传“远端 URL”，不下载
+            yield break;
+        }
         // 生成缓存目录和文件名
         string dir = Path.Combine(Application.persistentDataPath, "TripoCache");
         Directory.CreateDirectory(dir);
@@ -517,6 +537,12 @@ public class TripoInGameUI : MonoBehaviour
         // 没命中缓存就走原来的加载流程
         StartCoroutine(LoadAndSpawn(urlOrDir, promptMaybeNull));     // <<< 修改
 
+    }
+    static bool IsRemoteGltf(string url)
+    {
+        if (string.IsNullOrEmpty(url)) return false;
+        if (!url.StartsWith("http", System.StringComparison.OrdinalIgnoreCase)) return false;
+        return url.EndsWith(".gltf", System.StringComparison.OrdinalIgnoreCase);
     }
 
 }
