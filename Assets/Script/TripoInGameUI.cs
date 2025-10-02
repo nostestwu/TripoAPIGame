@@ -309,18 +309,24 @@ public class TripoInGameUI : MonoBehaviour
                 ModelCache.RegisterFromInstance(key, go, originalUrlMaybeRemote);
         }
 
-        // === ✅ 入库：只在“输入框生成”且有稳定本地路径时才入（避免远端 .gltf 失效）===
-        if (WarehouseDB.Instance)
+        // === ✅ 入库：输入框生成时，总是入库；优先用本地路径，否则用远端URL ===
+        if (WarehouseDB.Instance && _addToDBThisTime)
         {
+            // 如果这次是远端URL + 以后某次又缓存成了本地文件，替换为稳定的本地路径
             if (!string.IsNullOrEmpty(originalUrlMaybeRemote) && !string.IsNullOrEmpty(finalLocalPathForDB))
-                WarehouseDB.Instance.ReplaceUrlEverywhere(originalUrlMaybeRemote, finalLocalPathForDB);
-
-            if (_addToDBThisTime && !string.IsNullOrEmpty(finalLocalPathForDB))
             {
-                if (!WarehouseDB.Instance.ContainsUrl(finalLocalPathForDB))
-                    WarehouseDB.Instance.Add(_pendingPromptForDB ?? "Unnamed", finalLocalPathForDB);
+                WarehouseDB.Instance.ReplaceUrlEverywhere(originalUrlMaybeRemote, finalLocalPathForDB);
+            }
+
+            // keyForDB：本地优先，否则回退到远端URL（.gltf 场景）
+            string keyForDB = !string.IsNullOrEmpty(finalLocalPathForDB) ? finalLocalPathForDB : originalUrlMaybeRemote;
+
+            if (!string.IsNullOrEmpty(keyForDB) && !WarehouseDB.Instance.ContainsUrl(keyForDB))
+            {
+                WarehouseDB.Instance.Add(_pendingPromptForDB ?? "Unnamed", keyForDB);
             }
         }
+
         // 重置本次入库意图标记（无论成功失败都复位）
         _addToDBThisTime = false;
         _pendingPromptForDB = null;

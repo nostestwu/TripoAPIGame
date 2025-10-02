@@ -15,8 +15,8 @@ TagManager:
   - Grabbable
   - Player
   - NoStepOn
-  - 
-  - 
+  - Destructive
+  - Monster
   - 
   - 
   - 
