@@ -1828,7 +1828,7 @@ MonoBehaviour:
   throwKey: 101
   minImpulse: 3000
   maxImpulse: 20000
-  maxChargeTime: 5
+  maxChargeTime: 3
   chargeCurve:
     serializedVersion: 2
     m_Curve:
