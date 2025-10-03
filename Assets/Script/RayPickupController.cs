@@ -105,7 +105,26 @@ public class RayPickupController : MonoBehaviour
 
     void Awake()
     {
-        if (!cam) cam = Camera.main;
+        // 自动拾取摄像机
+        if (cam == null)
+        {
+            cam = Camera.main;
+        }
+        if (cam == null)
+        {
+            Camera[] cams = FindObjectsOfType<Camera>();
+            foreach (var c in cams)
+            {
+                if (c.enabled)
+                {
+                    cam = c;
+                    break;
+                }
+            }
+        }
+
+        Debug.Log($"[RayPickup] Awake: cam = {cam}");
+
         if (!rayOrigin) rayOrigin = transform;
         if (!holdParent) holdParent = rayOrigin;
 
@@ -118,7 +137,13 @@ public class RayPickupController : MonoBehaviour
 
     void Start()
     {
-        // 锚点
+        if (cam == null)
+        {
+            cam = Camera.main;
+        }
+        Debug.Log($"[RayPickup] Start: cam = {cam}");
+
+        // 锚点设置
         holdAnchor = new GameObject("HoldPoint").transform;
         holdAnchor.SetParent(holdParent ? holdParent : rayOrigin, false);
 
@@ -138,10 +163,9 @@ public class RayPickupController : MonoBehaviour
                 aimFrom = tpc.CinemachineCameraTarget.transform;
         }
 
-        EnsureAimDot(); // 世界空间末端点
+        EnsureAimDot();
         if (throwPanel) throwPanel.SetActive(false);
 
-        // 初始化 UI
         if (chargeSlider)
         {
             chargeSlider.minValue = 0f;
@@ -159,6 +183,15 @@ public class RayPickupController : MonoBehaviour
 
     void Update()
     {
+        if (cam == null)
+        {
+            cam = Camera.main;
+            Debug.Log($"[RayPickup] Update: cam was null, now set to Camera.main = {cam}");
+        }
+
+        // 你原来的 Update 逻辑继续…
+        // 例如：Debug 输出一下 _frameTargetPos, ray origin, etc.
+        Debug.DrawRay(rayOrigin.position, GetForwardDir() * maxGrabDistance, Color.green);
         // F：抓或放
         if (Input.GetKeyDown(KeyCode.F))
         {
@@ -240,6 +273,7 @@ public class RayPickupController : MonoBehaviour
         _frameTargetRot = baseRotNow
                         * Quaternion.AngleAxis(spinYDeg, Vector3.up)
                         * Quaternion.AngleAxis(spinXDeg, Vector3.right);
+        _frameTargetRot = _frameTargetRot.normalized;
 
         if (holdAnchor)
         {
@@ -253,7 +287,11 @@ public class RayPickupController : MonoBehaviour
         // 刷新 UI（Panel 显示、蓄力条、屏幕箭头）
         UpdateThrowUI();
     }
-
+    Vector3 GetForwardDir()
+    {
+        GetAimBasis(out var fwd, out _, out _);
+        return fwd;
+    }
     void FixedUpdate()
     {
         if (!holdRb) return;
@@ -264,6 +302,8 @@ public class RayPickupController : MonoBehaviour
 
         float kRot = 1f - Mathf.Exp(-rotSmoothing * Time.fixedDeltaTime);
         Quaternion smoothed = Quaternion.Slerp(holdRb.rotation, _frameTargetRot, kRot);
+        smoothed = smoothed.normalized;
+
         holdRb.MoveRotation(smoothed);
 
         if (held) held.angularVelocity = Vector3.zero;
@@ -349,8 +389,20 @@ public class RayPickupController : MonoBehaviour
     // —— 用 SphereCast 求“末端点”，把小球放到那里，并按命中状态换色 —— 
     void DrawAimDot()
     {
-        if (!showAimDot || _aimDot == null) return;
+        if (!showAimDot) return;
 
+        if (_aimDot == null)
+        {
+            // 尝试重建
+            EnsureAimDot();
+            if (_aimDot == null)
+            {
+                Debug.LogWarning("[RayPickup] DrawAimDot: _aimDot is null even after EnsureAimDot");
+                return;
+            }
+        }
+
+        // 原来逻辑…
         GetAimBasis(out var fwdNow, out _, out _);
         Vector3 origin = rayOrigin ? rayOrigin.position : transform.position;
 
@@ -382,6 +434,7 @@ public class RayPickupController : MonoBehaviour
         SetDotColor(c);
     }
 
+
     // ★ 在场景卸载后若锚点/刚体被销毁，自动重建
     void EnsureHoldAnchor()
     {
@@ -404,6 +457,7 @@ public class RayPickupController : MonoBehaviour
 
     void TryGrab()
     {
+        Debug.Log("[RayPickup] TryGrab attempt");
         EnsureHoldAnchor();
         if (held) return;
 

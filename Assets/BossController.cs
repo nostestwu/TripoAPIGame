@@ -211,6 +211,12 @@ public class BossController : MonoBehaviour
     void FireBossBall()
     {
         if (bossBallPrefab == null || shootSocket == null) return;
+
+        if (AudioManager.Instance != null && AudioManager.Instance.bossShootClip != null)
+        {
+            AudioManager.Instance.PlaySFX(AudioManager.Instance.bossShootClip, shootSocket.position, 1f);
+        }
+
         if (player == null)
         {
             var go = GameObject.FindWithTag("Player");

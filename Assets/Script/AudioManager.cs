@@ -21,6 +21,8 @@ public class AudioManager : MonoBehaviour
     public AudioClip doorOpenClip;
     public AudioClip deadClip;
     public AudioClip victoryClip;
+    public AudioClip bossShootClip;
+
 
     [Header("Pool")]
     public int sfxVoices = 12;               // 同时最多多少个 SFX

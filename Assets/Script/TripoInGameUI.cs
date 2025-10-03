@@ -126,6 +126,8 @@ public class TripoInGameUI : MonoBehaviour
         string prompt = promptInput.text.Trim();
         if (string.IsNullOrEmpty(prompt)) return;
 
+        Debug.Log("[GenerateClicked] prompt = " + prompt);
+
         core.textPrompt = prompt;
         core.Text_to_Model_func();
         waiting = true; timer = 0;
@@ -135,10 +137,10 @@ public class TripoInGameUI : MonoBehaviour
 
         lastPrompt = prompt;
 
-        // ✨ 仅“输入框生成”允许把模型写入 DB
         _addToDBThisTime = true;
-        _pendingPromptForDB = string.IsNullOrEmpty(lastPrompt)
-            ? "Unnamed" : lastPrompt;
+        _pendingPromptForDB = string.IsNullOrEmpty(lastPrompt) ? "Unnamed" : lastPrompt;
+
+        Debug.Log("[GenerateClicked] set _addToDBThisTime = true, pendingPrompt = " + _pendingPromptForDB);
     }
 
 
@@ -198,15 +200,14 @@ public class TripoInGameUI : MonoBehaviour
     {
         yield return LoadAndSpawn(pathOrUrl, lastPrompt);
     }
-    IEnumerator LoadAndSpawn(string pathOrUrl, string decoratePromptMaybe)   // <<< 新签名
+    IEnumerator LoadAndSpawn(string pathOrUrl, string decoratePromptMaybe)
     {
-        // === 0) 拿到本次要用的生成位姿（这一步修复了你漏赋值的问题） ===
+        // 0) 解析位姿
         if (!ResolveSpawnPose(out var spawnPos, out var spawnRot, out var spawnScaleLocal))
         {
-            Debug.LogWarning("[TripoInGameUI] No spawn pose resolved, using world origin.");
+            Debug.LogWarning("[TripoInGameUI] No spawn pose resolved, fallback to origin.");
         }
 
-        // === 1) 判空与缓存键 ===
         if (string.IsNullOrWhiteSpace(pathOrUrl))
         {
             Debug.LogError("Tripo returned empty model path/url");
@@ -214,53 +215,43 @@ public class TripoInGameUI : MonoBehaviour
             progressText.gameObject.SetActive(false);
             yield break;
         }
-        string cacheKey = pathOrUrl;
 
-        // === 2) 规范URI ===
-        string uri;
+        string uri = pathOrUrl;
+        bool isRemoteGltf = pathOrUrl.StartsWith("http") && pathOrUrl.EndsWith(".gltf", System.StringComparison.OrdinalIgnoreCase);
+
         string finalLocalPathForDB = null;
         string originalUrlMaybeRemote = null;
-        bool isRemoteGltf = false;
 
-        if (pathOrUrl.StartsWith("http", System.StringComparison.OrdinalIgnoreCase))
+        if (pathOrUrl.StartsWith("http"))
         {
             originalUrlMaybeRemote = pathOrUrl;
-            isRemoteGltf = IsRemoteGltf(pathOrUrl);
-
-            if (isRemoteGltf)
+            if (!isRemoteGltf)
             {
-                // ⭕ 远端 .gltf：不要下载成单文件！直接让 glTFast 用 URL，
-                // 这样它会自己按相对路径拉取 .bin / 贴图等外链资源。
-                uri = pathOrUrl;
-                finalLocalPathForDB = null;     // 不要入库
-            }
-            else
-            {
-                // ✅ .glb（或已知“单文件”）：下载到本地缓存，再用 file:// 打开
+                // 下载 .glb 或其它资源
                 string savedPath = null;
                 yield return DownloadToCache(pathOrUrl, p2 => savedPath = p2);
                 if (string.IsNullOrEmpty(savedPath))
                 {
-                    Debug.LogError("Tripo signed URL likely expired. Please re-generate a fresh link.");
+                    Debug.LogError("Download to cache failed for " + pathOrUrl);
                     waiting = false;
                     progressText.gameObject.SetActive(false);
                     yield break;
                 }
                 uri = "file://" + savedPath.Replace("\\", "/");
-                finalLocalPathForDB = savedPath; // ✅ 入库用本地路径（稳定）
+                finalLocalPathForDB = savedPath;
             }
         }
         else
         {
-            // 本地目录/文件分支（保持不变）
-            string full = Path.GetFullPath(pathOrUrl);
-            if (Directory.Exists(full))
+            // 本地路径逻辑，略同你原来的
+            string full = System.IO.Path.GetFullPath(pathOrUrl);
+            if (System.IO.Directory.Exists(full))
             {
-                var gltfs = Directory.GetFiles(full, "*.glb");
-                if (gltfs.Length == 0) gltfs = Directory.GetFiles(full, "*.gltf");
+                var gltfs = System.IO.Directory.GetFiles(full, "*.glb");
+                if (gltfs.Length == 0) gltfs = System.IO.Directory.GetFiles(full, "*.gltf");
                 if (gltfs.Length == 0)
                 {
-                    Debug.LogError("No glTF in " + full);
+                    Debug.LogError("No glTF in dir " + full);
                     waiting = false;
                     progressText.gameObject.SetActive(false);
                     yield break;
@@ -268,69 +259,98 @@ public class TripoInGameUI : MonoBehaviour
                 full = gltfs[0];
             }
             uri = "file://" + full.Replace("\\", "/");
-            finalLocalPathForDB = full; // ✅ 入库用绝对路径
+            finalLocalPathForDB = full;
         }
 
-        // === 3) 先创建承载物体并放到“当前激活场景” ===
+        // 3) 创建根 GameObject，作为父节点
         var go = new GameObject("TripoModel");
         go.transform.SetPositionAndRotation(spawnPos, spawnRot);
         go.transform.localScale = Vector3.one * spawnScaleLocal;
 
+        // 确保实例到当前活动 Scene
         var activeScene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
         if (activeScene.IsValid())
-            UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(go, activeScene); // 确保实例属于当前关卡（Additive流程必要）。 :contentReference[oaicite:0]{index=0}
+        {
+            UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(go, activeScene);
+        }
 
-        // === 4) glTFast 加载 ===
+        // 4) 加载 glTFast
         var gltf = go.AddComponent<GLTFast.GltfAsset>();
         gltf.Url = uri;
 
+        // 等待模型加载完成
         yield return new WaitUntil(() => gltf.IsDone);
+
+        // 等待至少有一个 MeshFilter 确保模型已实例化
         yield return new WaitUntil(() => go.GetComponentsInChildren<MeshFilter>(true).Length > 0);
 
-        // === 5) 递归设层 ===
+        // 此时贴图 / 材质已经被 glTFast 应该处理好了
+
+        // 5) 深拷贝材质贴图，打印材质贴图状态
+        DeepCopyMaterialsWithLogging(go);
+
+        // 6) 设置层
         int gLayer = LayerMask.NameToLayer(grabbableLayer);
         if (gLayer != -1) SetLayerRecursively(go, gLayer);
 
-        // === 6) 物理 ===
+        // 7) 物理体 / 碰撞体构建
         VHACDCompoundColliderBuilder.Build(go, maxHullsPerMesh: 32, rigidbodyMass: 300f);
 
-        // === 6.5) ✨ 如 prompt 像“爆炸物” → 自动挂 Explosive + Sphere Trigger
-        if (LooksLikeExplosive(decoratePromptMaybe))             
+        // 7.5) 装饰 (例如爆炸物)
+        if (LooksLikeExplosive(decoratePromptMaybe))
         {
             DecorateAsExplosive(go, decoratePromptMaybe);
         }
 
-        // === 7) 注册缓存 ===
-        if (!ModelCache.TryGet(finalLocalPathForDB ?? originalUrlMaybeRemote, out _))
-        {
-            // 会话级缓存：远端 .gltf 也允许用“原始 URL”做 key，让同一局内 SpawnExisting 命中
-            string key = finalLocalPathForDB ?? originalUrlMaybeRemote;
-            if (!string.IsNullOrEmpty(key))
-                ModelCache.RegisterFromInstance(key, go, originalUrlMaybeRemote);
-        }
+        // 8) 缓存（在贴图 /材质都已稳定后再缓存）
+        string keyForDB = finalLocalPathForDB ?? originalUrlMaybeRemote;
+        Debug.Log($"[LoadAndSpawn] keyForDB = {keyForDB}, _addToDBThisTime = {_addToDBThisTime}");
 
-        // === ✅ 入库：输入框生成时，总是入库；优先用本地路径，否则用远端URL ===
-        if (WarehouseDB.Instance && _addToDBThisTime)
+        // 8a. 缓存模型（先缓存再入库，或根据你逻辑顺序也可以反过来）
+        if (!string.IsNullOrEmpty(keyForDB))
         {
-            // 如果这次是远端URL + 以后某次又缓存成了本地文件，替换为稳定的本地路径
-            if (!string.IsNullOrEmpty(originalUrlMaybeRemote) && !string.IsNullOrEmpty(finalLocalPathForDB))
+            if (!ModelCache.TryGet(keyForDB, out _))
             {
-                WarehouseDB.Instance.ReplaceUrlEverywhere(originalUrlMaybeRemote, finalLocalPathForDB);
+                Debug.Log($"[LoadAndSpawn] Registering model cache for key = {keyForDB}");
+                ModelCache.RegisterFromInstance(keyForDB, go, originalUrlMaybeRemote);
             }
-
-            // keyForDB：本地优先，否则回退到远端URL（.gltf 场景）
-            string keyForDB = !string.IsNullOrEmpty(finalLocalPathForDB) ? finalLocalPathForDB : originalUrlMaybeRemote;
-
-            if (!string.IsNullOrEmpty(keyForDB) && !WarehouseDB.Instance.ContainsUrl(keyForDB))
+            else
             {
-                WarehouseDB.Instance.Add(_pendingPromptForDB ?? "Unnamed", keyForDB);
+                Debug.Log($"[LoadAndSpawn] ModelCache already contains key = {keyForDB}");
             }
         }
+        else
+        {
+            Debug.LogWarning("[LoadAndSpawn] keyForDB is null or empty, skipping cache registration");
+        }
 
-        // 重置本次入库意图标记（无论成功失败都复位）
-        _addToDBThisTime = false;
-        _pendingPromptForDB = null;
-        // === 8) UI 复位 ===
+        // 8b. 尝试入库：只有当 _addToDBThisTime = true 且 WarehouseDB 存在时才入库
+        if (WarehouseDB.Instance != null && _addToDBThisTime)
+        {
+            if (!string.IsNullOrEmpty(keyForDB))
+            {
+                // 判断仓库里是否已有这个 key
+                if (!WarehouseDB.Instance.ContainsUrl(keyForDB))
+                {
+                    Debug.Log($"[LoadAndSpawn] Adding to warehouse DB: prompt = {_pendingPromptForDB}, url = {keyForDB}");
+                    WarehouseDB.Instance.Add(_pendingPromptForDB ?? "Unnamed", keyForDB);
+                }
+                else
+                {
+                    Debug.Log($"[LoadAndSpawn] WarehouseDB already contains url = {keyForDB}, skipping Add");
+                }
+            }
+            else
+            {
+                Debug.LogWarning("[LoadAndSpawn] Wanted to add to DB but keyForDB is null or empty");
+            }
+        }
+        else
+        {
+            Debug.Log($"[LoadAndSpawn] Skip warehouse DB add: Instance={(WarehouseDB.Instance != null)}, _addToDBThisTime={_addToDBThisTime}");
+        }
+
+        // 9) UI /状态复位
         waiting = false;
         progressText.gameObject.SetActive(false);
         timer = 0f;
@@ -338,12 +358,13 @@ public class TripoInGameUI : MonoBehaviour
     }
 
 
-
     void SetLayerRecursively(GameObject obj, int layer)
     {
         obj.layer = layer;
         foreach (Transform t in obj.transform)
+        {
             SetLayerRecursively(t.gameObject, layer);
+        }
     }
 
     // 统一用解析后的位姿来克隆仓库里的模型（避免依赖 spawnPoint 是否被外部更新）
@@ -351,22 +372,81 @@ public class TripoInGameUI : MonoBehaviour
     {
         if (!ResolveSpawnPose(out var spawnPos, out var spawnRot, out var spawnScaleLocal))
         {
-            spawnPos = Vector3.zero; spawnRot = Quaternion.identity; spawnScaleLocal = spawnScale;
+            spawnPos = Vector3.zero;
+            spawnRot = Quaternion.identity;
+            spawnScaleLocal = spawnScale;
         }
-
         if (ModelCache.TryGet(urlOrDir, out var prefab))
         {
+            // 不用直接 Instantiate(prefab)，先 clone 干净版本
             var clone = Instantiate(prefab, spawnPos, spawnRot);
             clone.transform.localScale = Vector3.one * spawnScaleLocal;
+
+            // 深拷贝材质 /贴图给 clone，避免贴图丢失
+            DeepCopyMaterialsWithLogging(clone);
+
             clone.SetActive(true);
             StartCoroutine(WarmEnableColliders(clone));
             return;
         }
-
-        Debug.LogWarning($"[CacheMiss] {urlOrDir} 未命中缓存，退回加载协程。");
-        StartCoroutine(LoadAndSpawn(urlOrDir));
+        else
+        {
+            Debug.LogWarning($"[CacheMiss] {urlOrDir} not found in cache, fallback load.");
+            StartCoroutine(LoadAndSpawn(urlOrDir));
+        }
     }
+    void DeepCopyMaterialsWithLogging(GameObject obj)
+    {
+        foreach (var rend in obj.GetComponentsInChildren<Renderer>(true))
+        {
+            Material[] mats = rend.materials;
+            for (int i = 0; i < mats.Length; i++)
+            {
+                Material oldMat = mats[i];
+                if (oldMat == null) continue;
+                Material newMat = new Material(oldMat);
+                // 拷贝常见贴图属性
+                if (oldMat.HasProperty("_MainTex"))
+                {
+                    newMat.SetTexture("_MainTex", oldMat.GetTexture("_MainTex"));
+                }
+                if (oldMat.HasProperty("_BaseColorMap"))
+                {
+                    newMat.SetTexture("_BaseColorMap", oldMat.GetTexture("_BaseColorMap"));
+                }
+                if (oldMat.HasProperty("_OcclusionMap"))
+                {
+                    // 如果 occlusion 贴图为黑色可能导致材质显黑，考虑去除
+                    Texture occ = oldMat.GetTexture("_OcclusionMap");
+                    if (occ == null)
+                    {
+                        newMat.SetTexture("_OcclusionMap", null);
+                    }
+                    else
+                    {
+                        newMat.SetTexture("_OcclusionMap", occ);
+                        // 强制 occlusion 强度为 0，避免黑贴图影响
+                        if (newMat.HasProperty("_OcclusionStrength"))
+                        {
+                            newMat.SetFloat("_OcclusionStrength", 0f);
+                        }
+                    }
+                }
+                // 还可以加入 normal / metallic / roughness 等其他贴图属性
+                // 示例：
+                if (oldMat.HasProperty("_BumpMap"))
+                    newMat.SetTexture("_BumpMap", oldMat.GetTexture("_BumpMap"));
+                if (oldMat.HasProperty("_MetallicGlossMap"))
+                    newMat.SetTexture("_MetallicGlossMap", oldMat.GetTexture("_MetallicGlossMap"));
 
+                // 日志贴图状态
+                Debug.Log($"[DeepCopy] Renderer {rend.name}, material #{i} newMat.prop _MainTex = {newMat.GetTexture("_MainTex")}, _OcclusionMap = {newMat.GetTexture("_OcclusionMap")}");
+
+                mats[i] = newMat;
+            }
+            rend.materials = mats;
+        }
+    }
 
 
     IEnumerator DownloadToCache(string remoteUrl, System.Action<string> onDone)
