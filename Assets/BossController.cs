@@ -2,199 +2,227 @@ using System.Collections;
 using UnityEngine;
 
 [RequireComponent(typeof(Animator))]
-[RequireComponent(typeof(Rigidbody))]
 public class BossController : MonoBehaviour
 {
-    public enum BossState { Idle, Flying, Attacking }
-
     [Header("Refs")]
-    public Transform player;                 // 指向玩家（必填）
-    public Transform shootSocket;            // 子弹生成点（嘴/手/中心…）
-    public GameObject bossBallPrefab;        // 你的 BossBall 预制体
-    public GameObject portalToRevealOnDeath; // Boss 死后显示的通关传送门
-    public MonsterHealth health;             // Boss 的血量脚本（用于监听死亡）
+    public Transform player;
+    public Transform shootSocket;
+    public GameObject bossBallPrefab;
+    public GameObject portalToRevealOnDeath;
+    public MonsterHealth health;
 
-    [Header("Timings (seconds)")]
-    public float idleRiseDuration1 = 2f;     // 1. 向上慢慢移动 2s（Idle）
-    public float flyToPlayerFast1 = 1f;      // 2. 快速朝玩家飞 1s（Flying）
-    public float idleStopDuration = 0.5f;    // 3. 停 0.5s（Idle）
-    public float attackClipLength = 2.5f;    // 4. 攻击动画长度（每次）
-    public float bossBallSpawnAt = 1.5f;     //    每段攻击的 1.5s 生成子弹
-    public int attacksPerCycle = 3;          //    攻击 3 次
-    public float flyToPlayerFast2 = 2f;      // 5. 快速朝玩家飞 2s（Flying）
-    public float riseBetweenCycles = 2f;     //    再向上移动 2s，进入下一轮
+    [Header("Timings (s)")]
+    public float idleRiseDuration = 2f;
+    public float flyDuration1 = 1f;
+    public float idlePauseDuration = 0.5f;
+    public float attackClipLength = 2.5f;
+    public float bossBallSpawnAt = 1.5f;
+    public int attacksPerCycle = 3;
+    public float flyDuration2 = 2f;
+    public float idleRiseBetweenCycles = 2f;
 
-    [Header("Movement")]
-    public float idleRiseSpeed = 1.0f;       // Idle 上升速度（m/s）
-    public float flySpeedFast = 12f;         // Flying 追击速度（m/s）
-    public float turnLerp = 10f;             // 朝向插值，越大转向越快
+    [Header("Speeds")]
+    public float riseSpeed = 1f;
+    public float approachSpeed = 8f;    // 降低速度，原来是 12f，现在调慢
+    public float heightLerpSpeed = 2f;  // 高度靠近的插值速度（Y 轴慢一点）
+    public float turnLerp = 10f;
 
     [Header("Anim Params")]
     public string idleStateName = "Idle";
     public string flyingStateName = "Flying";
     public string attackStateName = "Attack";
-    public string attackTrigger = "Attack";  // 如果你用 Trigger 触发攻击
+    public string attackTrigger = "Attack";
 
     Animator _anim;
-    Rigidbody _rb;
-    BossState _state;
-    bool _running;
-
-    void Reset()
-    {
-        var rb = GetComponent<Rigidbody>();
-        rb.useGravity = false;                 // Boss 自己悬浮/飞行
-        rb.isKinematic = true;                 // 用 MovePosition 控制即可
-        rb.collisionDetectionMode = CollisionDetectionMode.ContinuousSpeculative;
-    }
+    bool _running = false;
 
     void Awake()
     {
         _anim = GetComponent<Animator>();
-        _rb = GetComponent<Rigidbody>();
     }
 
-    void OnEnable()
+    void Start()
     {
-        if (health)
+        if (player == null)
         {
-            // 用事件更优雅（见 MonsterHealth 补丁）
-            health.onDeath += OnBossDeath;
+            var go = GameObject.FindWithTag("Player");
+            if (go != null) player = go.transform;
         }
-        if (!_running && player)
+        if (player == null)
+        {
+            Debug.LogError("[BossController] 找不到 Player", this);
+        }
+
+        if (!_running)
         {
             _running = true;
             StartCoroutine(AiLoop());
         }
     }
 
+    void OnEnable()
+    {
+        if (health != null)
+            health.onDeath += OnBossDeath;
+    }
+
     void OnDisable()
     {
-        if (health) health.onDeath -= OnBossDeath;
+        if (health != null)
+            health.onDeath -= OnBossDeath;
     }
 
     void OnBossDeath()
     {
-        // Boss 死亡 → 显示 Portal
-        if (portalToRevealOnDeath) portalToRevealOnDeath.SetActive(true);
-        // 这里也可以停掉 AI、播放死亡动画等
+        if (portalToRevealOnDeath != null)
+            portalToRevealOnDeath.SetActive(true);
         StopAllCoroutines();
-        _running = false;
     }
 
     IEnumerator AiLoop()
     {
         while (true)
         {
-            // 1) Idle：向上慢慢移动 2s
-            SetAnim(idleStateName);
-            yield return MoveFor(idleRiseDuration1, Vector3.up * idleRiseSpeed);
+            // 1. Idle rise upward
+            _anim.CrossFade(idleStateName, 0.1f);
+            float t0 = 0f;
+            while (t0 < idleRiseDuration)
+            {
+                t0 += Time.deltaTime;
+                transform.position += Vector3.up * riseSpeed * Time.deltaTime;
+                FacePlayer();
+                yield return null;
+            }
 
-            // 2) Flying：快速朝玩家飞 1s
-            SetAnim(flyingStateName);
-            yield return FlyToPlayerFor(flyToPlayerFast1, flySpeedFast);
+            // 2. Fly toward player (phase 1) — 三维靠近 + Y 轴缓慢
+            _anim.CrossFade(flyingStateName, 0.1f);
+            float tf = 0f;
+            while (tf < flyDuration1)
+            {
+                tf += Time.deltaTime;
+                if (player != null)
+                {
+                    Vector3 current = transform.position;
+                    Vector3 target = player.position;
 
-            // 3) Idle：停住 0.5s
-            SetAnim(idleStateName);
-            yield return new WaitForSeconds(idleStopDuration);  // 协程等待。:contentReference[oaicite:0]{index=0}
+                    // XZ 直接靠近
+                    Vector3 newPosXZ = Vector3.MoveTowards(current, target, approachSpeed * Time.deltaTime);
 
-            // 4) Attack：播放攻击动画 attacksPerCycle 次；每次到 1.5s 生成子弹
+                    // Y 轴插值靠近（慢一点）
+                    float newY = Mathf.Lerp(current.y, target.y, heightLerpSpeed * Time.deltaTime);
+
+                    transform.position = new Vector3(newPosXZ.x, newY, newPosXZ.z);
+                }
+                // 添加飞行倾斜：x 轴 rotate ~50 度（你说 flying 动画是把 x 轴旋转了 50 度）
+                ApplyFlyingTilt();
+                FacePlayer();
+                yield return null;
+            }
+
+            // 3. Idle pause
+            _anim.CrossFade(idleStateName, 0.1f);
+            float tp = 0f;
+            while (tp < idlePauseDuration)
+            {
+                tp += Time.deltaTime;
+                FacePlayer();
+                yield return null;
+            }
+
+            // 4. Attack cycles
             for (int i = 0; i < attacksPerCycle; i++)
             {
-                // 切攻击动画
-                SetAnim(attackStateName, useTrigger: true);
+                _anim.ResetTrigger(attackTrigger);
+                _anim.SetTrigger(attackTrigger);
 
-                // 在攻击剪辑 1.5s 时点发射 BossBall
-                yield return new WaitForSeconds(bossBallSpawnAt);  // 协程等待。:contentReference[oaicite:1]{index=1}
+                float t = 0f;
+                while (t < bossBallSpawnAt)
+                {
+                    t += Time.deltaTime;
+                    FacePlayer();
+                    yield return null;
+                }
+
                 FireBossBall();
 
-                // 等待到这次攻击动画结束
                 float remain = Mathf.Max(0f, attackClipLength - bossBallSpawnAt);
-                if (remain > 0f) yield return new WaitForSeconds(remain);
+                float t2 = 0f;
+                while (t2 < remain)
+                {
+                    t2 += Time.deltaTime;
+                    FacePlayer();
+                    yield return null;
+                }
             }
 
-            // 5) Flying：快速朝玩家飞 2s
-            SetAnim(flyingStateName);
-            yield return FlyToPlayerFor(flyToPlayerFast2, flySpeedFast);
-
-            // 6) Idle：再向上移动 2s（进入下一轮）
-            SetAnim(idleStateName);
-            yield return MoveFor(riseBetweenCycles, Vector3.up * idleRiseSpeed);
-        }
-    }
-
-    void SetAnim(string stateName, bool useTrigger = false)
-    {
-        if (!_anim) return;
-        if (useTrigger && !string.IsNullOrEmpty(attackTrigger))
-        {
-            _anim.ResetTrigger(attackTrigger);
-            _anim.SetTrigger(attackTrigger); // 触发器切到攻击层/状态。实际项目看你的 Animator 配置
-        }
-        else
-        {
-            _anim.CrossFadeInFixedTime(stateName, 0.1f); // 平滑过渡
-        }
-    }
-
-    IEnumerator MoveFor(float seconds, Vector3 velocity)
-    {
-        float t = 0f;
-        Vector3 v = velocity;
-        while (t < seconds)
-        {
-            t += Time.deltaTime;
-            FacePlayer(); // 始终朝向玩家
-            // 用 Rigidbody.MovePosition 做插值移动（isKinematic=true 时可用）
-            _rb.MovePosition(_rb.position + v * Time.deltaTime);
-            yield return null;
-        }
-    }
-
-    IEnumerator FlyToPlayerFor(float seconds, float speed)
-    {
-        float t = 0f;
-        while (t < seconds)
-        {
-            t += Time.deltaTime;
-            if (player)
+            // 5. Fly toward player (phase 2) — 三维靠近 + Y 轴缓慢
+            _anim.CrossFade(flyingStateName, 0.1f);
+            float tf2 = 0f;
+            while (tf2 < flyDuration2)
             {
-                Vector3 dir = (player.position - transform.position);
-                dir.y = 0f; // 仅在水平面追击；若需要 3D 追击就去掉这行
-                dir = dir.sqrMagnitude > 0.0001f ? dir.normalized : Vector3.forward;
+                tf2 += Time.deltaTime;
+                if (player != null)
+                {
+                    Vector3 current = transform.position;
+                    Vector3 target = player.position;
 
+                    Vector3 newPosXZ = Vector3.MoveTowards(current, target, approachSpeed * Time.deltaTime);
+                    float newY = Mathf.Lerp(current.y, target.y, heightLerpSpeed * Time.deltaTime);
+
+                    transform.position = new Vector3(newPosXZ.x, newY, newPosXZ.z);
+                }
+                ApplyFlyingTilt();
                 FacePlayer();
-                _rb.MovePosition(_rb.position + dir * speed * Time.deltaTime);
+                yield return null;
             }
-            yield return null;
+
+            // 6. Idle rise between cycles
+            _anim.CrossFade(idleStateName, 0.1f);
+            float tbr = 0f;
+            while (tbr < idleRiseBetweenCycles)
+            {
+                tbr += Time.deltaTime;
+                transform.position += Vector3.up * riseSpeed * Time.deltaTime;
+                FacePlayer();
+                yield return null;
+            }
         }
+    }
+
+    void ApplyFlyingTilt()
+    {
+        // 让 Boss 在飞行时有一个 X 轴旋转倾斜，比如 -50 度或 +50 度的俯仰/倾斜
+        // 假设你要把他沿本地 X 轴倾斜 50 度向前（负方向）:
+        Quaternion tilt = Quaternion.Euler(50f, 0f, 0f);
+        // 也可以插值旋转与当前融合：
+        transform.rotation = Quaternion.Slerp(transform.rotation, transform.rotation * tilt, 5f * Time.deltaTime);
     }
 
     void FacePlayer()
     {
-        if (!player) return;
-        Vector3 to = (player.position - transform.position);
-        if (to.sqrMagnitude < 0.001f) return;
-
-        // 只绕 Y 转向（看向玩家）
-        to.y = 0f;
-        if (to.sqrMagnitude < 0.001f) return;
-
-        Quaternion target = Quaternion.LookRotation(to.normalized, Vector3.up); // 朝向。:contentReference[oaicite:2]{index=2}
+        if (player == null) return;
+        Vector3 to = player.position - transform.position;
+        to.y = 0f;  // 水平朝向，不影响上下
+        if (to.sqrMagnitude < 0.0001f) return;
+        Quaternion target = Quaternion.LookRotation(to.normalized, Vector3.up);
         transform.rotation = Quaternion.Slerp(transform.rotation, target, turnLerp * Time.deltaTime);
     }
 
     void FireBossBall()
     {
-        if (!bossBallPrefab || !shootSocket) return;
-
-        // 实例化 BossBall，并给它初速度。:contentReference[oaicite:3]{index=3}
-        var go = Instantiate(bossBallPrefab, shootSocket.position, shootSocket.rotation);
-        var ball = go.GetComponent<BossBall>();
-        if (ball)
+        if (bossBallPrefab == null || shootSocket == null) return;
+        if (player == null)
         {
-            Vector3 dir = player ? (player.position - shootSocket.position).normalized
-                                 : shootSocket.forward;
+            var go = GameObject.FindWithTag("Player");
+            if (go != null) player = go.transform;
+        }
+        GameObject goBall = Instantiate(bossBallPrefab, shootSocket.position, shootSocket.rotation);
+        var ball = goBall.GetComponent<BossBall>();
+        if (ball != null)
+        {
+            Vector3 dir = (player != null)
+                ? (player.position - shootSocket.position).normalized
+                : shootSocket.forward;
             ball.Launch(dir);
         }
     }

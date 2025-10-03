@@ -4,19 +4,19 @@ using UnityEngine;
 [RequireComponent(typeof(Collider))]
 public class BossBall : MonoBehaviour
 {
-    [Header("Motion")]
     public float speed = 20f;
-    public float lifeTime = 8f;               // 防止飞太远不回收
+    public float lifeTime = 8f;
     public LayerMask hitMask = ~0;
 
-    [Header("On Hit")]
     public GameObject hitVfxPrefab;
     public float hitVfxLife = 3f;
     public string playerTag = "Player";
-    public Transform defaultRespawnPoint;     // ← 改成这个名字
+
+    // 这里我们把 defaultRespawnPoint 改为可以动态查 PlayerSpawn
+    public Transform respawnPointOverride; // Inspector 可指定
+    Transform _defaultRespawnPointCached;
 
     Rigidbody _rb;
-    Vector3 _vel;
 
     void Awake()
     {
@@ -27,20 +27,31 @@ public class BossBall : MonoBehaviour
 
     public void Launch(Vector3 dir)
     {
-        _vel = (dir.sqrMagnitude > 0.0001f ? dir.normalized : transform.forward) * speed;
-        _rb.velocity = _vel;
+        _rb.velocity = dir.normalized * speed;
         Destroy(gameObject, lifeTime);
     }
 
     void OnCollisionEnter(Collision c)
     {
+        // 命中玩家
         if (c.collider.CompareTag(playerTag))
         {
             var rag = c.collider.GetComponentInParent<PlayerRagdollController>();
             if (rag != null)
             {
-                Transform respawn = defaultRespawnPoint;
-                rag.KnockoutAndRespawn(respawn, 2f);
+                // 拿复活点：优先 override，其次查场景中的 PlayerSpawn
+                Transform rp = respawnPointOverride;
+                if (rp == null)
+                {
+                    // 缓存一次搜索
+                    if (_defaultRespawnPointCached == null)
+                    {
+                        var ps = GameObject.FindObjectOfType<PlayerSpawn>();
+                        if (ps != null) _defaultRespawnPointCached = ps.transform;
+                    }
+                    rp = _defaultRespawnPointCached;
+                }
+                rag.KnockoutAndRespawn(rp, 2f);
             }
         }
 
